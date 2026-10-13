@@ -33,11 +33,27 @@ export type AnalyzeResult = {
 const API_URL = process.env.NEXT_PUBLIC_API_URL
 const BACKEND_URL = API_URL || 'http://localhost:8000'
 
-export async function transcribeAudio(audio: Blob): Promise<string> {
+function detectMapRouteScenario(text: string): boolean {
+  const normalized = text.trim().toLowerCase()
+  if (!normalized) return false
+
+  const locationTerms = ['school', 'home', 'house', 'hospital', 'bank', 'park', 'station', 'market', 'office', 'airport', 'hotel', 'library']
+  const routeTerms = ['map', 'route', 'road', 'street', 'traffic', 'path', 'distance', 'travel', 'shortest', 'destination', 'source', 'connect']
+
+  const hasLocation = locationTerms.some((term) => normalized.includes(term))
+  const hasRoute = routeTerms.some((term) => normalized.includes(term))
+
+  return hasLocation && hasRoute
+}
+
+export async function transcribeAudio(audio: Blob, fileName = 'voice.webm'): Promise<string> {
   const formData = new FormData()
-  formData.append('audio', audio, 'voice.webm')
+  formData.append('audio', audio, fileName)
   const response = await fetch(`${BACKEND_URL}/transcribe`, { method: 'POST', body: formData })
-  if (!response.ok) throw new Error('Local transcription failed')
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(detail || 'Local transcription failed')
+  }
   const data = await response.json() as { text?: string }
   return data.text || ''
 }
@@ -151,6 +167,52 @@ function merge(left, right) {
     }
   }
 
+  if (detectMapRouteScenario(normalized)) {
+    return {
+      is_computational: true,
+      explanation: 'This is a route-planning problem: the image shows places connected by roads or weighted steps, so the goal is to find the shortest path with the lowest travel cost. Dijkstra’s algorithm matches this pattern.',
+      algorithm_name: "Dijkstra's Algorithm",
+      time_complexity: 'O((V + E) log V)',
+      space_complexity: 'O(V)',
+      prerequisites: 'A weighted graph with non-negative road costs or travel times',
+      limitation: 'Not suitable for negative-weight routes',
+      category: 'Graph / Shortest Path',
+      alternatives: [
+        { name: 'BFS', time_complexity: 'O(V + E)', space_complexity: 'O(V)', prerequisites: 'Unweighted roads or equal travel costs', limitation: 'Ignores different distances', reason: 'Prefer it when every move costs the same amount.' },
+        { name: 'A* Search', time_complexity: 'O(E)', space_complexity: 'O(V)', prerequisites: 'A good heuristic estimate', limitation: 'Needs distance guidance', reason: 'Prefer it for route optimization when you have a heuristic.' },
+      ],
+      steps: [
+        { label: 'Set source', detail: 'Start from the origin point such as school or home.', visited: [], queue: ['School'] },
+        { label: 'Relax roads', detail: 'Check every neighboring location and update the lowest known travel cost.', visited: ['School'], queue: ['Park', 'Bank'] },
+        { label: 'Choose best', detail: 'Continue with the lowest-cost unfinished node until the destination is reached.', visited: ['School', 'Park'], queue: ['Home'] },
+      ],
+      code_snippet: `function dijkstra(graph, start) {
+  const distance = {}
+  const visited = new Set()
+  for (const node in graph) distance[node] = Infinity
+  distance[start] = 0
+  const queue = [[0, start]]
+
+  while (queue.length) {
+    queue.sort((a, b) => a[0] - b[0])
+    const [cost, node] = queue.shift()
+    if (visited.has(node)) continue
+    visited.add(node)
+
+    for (const [neighbor, weight] of graph[node]) {
+      const nextDistance = cost + weight
+      if (nextDistance < distance[neighbor]) {
+        distance[neighbor] = nextDistance
+        queue.push([nextDistance, neighbor])
+      }
+    }
+  }
+
+  return distance
+}`,
+    }
+  }
+
   if (/dependenc|prerequisite|build order|course schedule|topological/.test(normalized)) {
     return {
       is_computational: true,
@@ -232,10 +294,10 @@ function merge(left, right) {
     }
   }
 
-  if (/shortest path|graph|vertices|edges|connected/.test(normalized)) {
+  if (/shortest path|graph|vertices|edges|connected|route|traffic|road|street|distance|travel|school|home/.test(normalized)) {
     return {
       is_computational: true,
-      explanation: 'This looks like a graph problem. Dijkstra’s algorithm is a good fit for weighted shortest paths.',
+      explanation: 'This looks like a graph problem. Dijkstra’s algorithm is a good fit for weighted shortest paths such as road travel times, distances, or traffic costs.',
       algorithm_name: "Dijkstra's Algorithm",
       time_complexity: 'O((V + E) log V)',
       space_complexity: 'O(V)',

@@ -1,6 +1,6 @@
 import os
 import tempfile
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -32,6 +32,17 @@ def analyze_text(text: str) -> AnalyzeResponse:
         return AnalyzeResponse(
             is_computational=False,
             explanation='Please enter a scenario or sentence to analyze.',
+        )
+
+    route_terms = ['map', 'route', 'road', 'street', 'traffic', 'path', 'distance', 'travel', 'shortest', 'destination', 'source', 'home', 'school']
+    place_terms = ['school', 'home', 'house', 'hospital', 'bank', 'park', 'market', 'office', 'airport', 'station']
+    if any(term in normalized for term in route_terms) and any(term in normalized for term in place_terms):
+        return AnalyzeResponse(
+            is_computational=True,
+            explanation='This is a route-planning problem: the image shows places connected by roads or traffic, and the goal is to minimize travel cost or distance. Dijkstra\'s algorithm is the correct choice for the shortest path.',
+            algorithm_name="Dijkstra's Algorithm",
+            time_complexity='O((V + E) log V)',
+            code_snippet='function dijkstra(graph, start) {\n  const dist = {};\n  const visited = new Set();\n  for (const node in graph) dist[node] = Infinity;\n  dist[start] = 0;\n  const queue = [[0, start]];\n\n  while (queue.length) {\n    queue.sort((a, b) => a[0] - b[0]);\n    const [cost, node] = queue.shift();\n    if (visited.has(node)) continue;\n    visited.add(node);\n\n    for (const [neighbor, weight] of graph[node]) {\n      const newCost = cost + weight;\n      if (newCost < dist[neighbor]) {\n        dist[neighbor] = newCost;\n        queue.push([newCost, neighbor]);\n      }\n    }\n  }\n  return dist;\n}',
         )
 
     if 'sort' in normalized or 'sorting' in normalized or 'sorted' in normalized:
@@ -84,10 +95,19 @@ def analyze(request: AnalyzeRequest) -> AnalyzeResponse:
 @app.post('/transcribe')
 async def transcribe(audio: UploadFile = File(...)):
     global whisper_model
-    from faster_whisper import WhisperModel
+    if not audio.content_type or not audio.content_type.startswith('audio/'):
+        raise HTTPException(status_code=415, detail='Please upload an audio recording.')
 
-    if whisper_model is None:
-        whisper_model = WhisperModel('tiny', device='cpu', compute_type='int8')
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail='Whisper is not installed. Run pip install -r requirements.txt.') from error
+
+    try:
+        if whisper_model is None:
+            whisper_model = WhisperModel('tiny', device='cpu', compute_type='int8')
+    except Exception as error:
+        raise HTTPException(status_code=503, detail='Whisper could not load its speech model. Check network access and ffmpeg support.') from error
 
     suffix = os.path.splitext(audio.filename or '.webm')[1] or '.webm'
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temporary_file:
@@ -95,7 +115,10 @@ async def transcribe(audio: UploadFile = File(...)):
         temporary_path = temporary_file.name
 
     try:
-        segments, _ = whisper_model.transcribe(temporary_path, beam_size=5)
-        return {'text': ' '.join(segment.text.strip() for segment in segments).strip()}
+        try:
+            segments, _ = whisper_model.transcribe(temporary_path, beam_size=5)
+            return {'text': ' '.join(segment.text.strip() for segment in segments).strip()}
+        except Exception as error:
+            raise HTTPException(status_code=422, detail='The audio format could not be transcribed. Try recording for at least two seconds.') from error
     finally:
         os.unlink(temporary_path)
